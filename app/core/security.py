@@ -1,10 +1,12 @@
-from datetime import datetime, timedelta, timezone
-from jose import jwt, JWTError
+from datetime import UTC, datetime, timedelta
+
 from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
@@ -19,11 +21,11 @@ def verify_password(password: str, password_hash: str) -> bool:
     try:
         ph.verify(password_hash, password)
         return True
-    except Exception:
+    except (VerifyMismatchError, InvalidHash):
         return False
 
 def create_access_token(subject: str, role: str):
-    exp = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    exp = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode({"sub": subject, "role": role, "exp": exp}, settings.SECRET_KEY, algorithm="HS256")
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):

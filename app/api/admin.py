@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
 from app.core.security import require_roles
-from app.models.user import User
-from app.models.consultation import Consultation
 from app.models.audit import AuditLog
+from app.models.consultation import Consultation
+from app.models.user import User
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 

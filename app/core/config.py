@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     APP_NAME: str = "Amrutam Telemedicine Backend"
     ENVIRONMENT: str = "development"

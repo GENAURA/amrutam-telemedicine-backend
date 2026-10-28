@@ -12,7 +12,6 @@ from app.models.audit import AuditLog
 from app.models.consultation import Consultation
 from app.models.payment import Payment
 
-
 router = APIRouter(
     prefix="/payments",
     tags=["Payments"],

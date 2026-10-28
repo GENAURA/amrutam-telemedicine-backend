@@ -1,18 +1,17 @@
+import json
 from datetime import datetime
 from uuid import UUID
-from app.core.cache import invalidate_doctor_availability
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import invalidate_doctor_availability
 from app.core.database import get_db
 from app.core.redis import redis_client
-import json
 from app.core.security import require_roles
-from app.models.doctor import Doctor, AvailabilitySlot
-
+from app.models.doctor import AvailabilitySlot, Doctor
 
 router = APIRouter(
     prefix="/doctors",

@@ -1,20 +1,19 @@
 import json
-from app.workers.tasks import send_booking_notification
 from uuid import UUID
-from app.core.cache import invalidate_doctor_availability
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import invalidate_doctor_availability
 from app.core.database import get_db
-from app.core.security import require_roles, get_current_user
-from app.models.doctor import AvailabilitySlot, Doctor
-from app.models.consultation import Consultation
-from app.models.prescription import Prescription
+from app.core.security import get_current_user, require_roles
 from app.models.audit import AuditLog
-
+from app.models.consultation import Consultation
+from app.models.doctor import AvailabilitySlot, Doctor
+from app.models.prescription import Prescription
+from app.workers.tasks import send_booking_notification
 
 router = APIRouter(
     prefix="/consultations",
