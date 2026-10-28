@@ -1,0 +1,283 @@
+from datetime import datetime
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.database import get_db
+from app.core.security import get_current_user, require_roles
+from app.models.doctor import Doctor, AvailabilitySlot
+from app.models.user import User
+
+router = APIRouter(prefix="/doctors", tags=["Doctors"])
+
+class DoctorIn(BaseModel):
+    specialization: str
+    license_number: str
+    experience_years: int = 0
+    bio: str = ""
+
+class SlotIn(BaseModel):
+    start_time: datetime
+    end_time: datetime
+
+@router.get("")
+async def search_doctors(
+    specialization: str | None = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(Doctor)
+    if specialization:
+        stmt = stmt.where(Doctor.specialization.ilike(f"%{specialization}%"))
+    rows = (await db.execute(stmt)).scalars().all()
+    return [{"id": str(d.id), "specialization": d.specialization, "experience_years": d.experience_years, "verified": d.is_verified} for d in rows]
+
+@router.post("")
+async def create_doctor(data: DoctorIn, user=Depends(require_roles("ADMIN")), db: AsyncSession = Depends(get_db)):
+    doctor = Doctor(user_id=user.id, **data.model_dump())
+    db.add(doctor)
+    await db.commit()
+    await db.refresh(doctor)
+    return {"id": str(doctor.id)}
+
+@router.post("/{doctor_id}/availability")
+async def create_slot(
+    doctor_id: UUID,
+    data: SlotIn,
+    user=Depends(require_roles("DOCTOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    doctor = await db.get(Doctor, doctor_id)
+    if not doctor:
+        raise HTTPException(404, "Doctor not found")
+    if user.role == "DOCTOR" and doctor.user_id != user.id:
+        raise HTTPException(403, "Cannot manage another doctor's availability")
+    if data.end_time <= data.start_time:
+        raise HTTPException(400, "Invalid slot time")
+    slot = AvailabilitySlot(doctor_id=doctor_id, **data.model_dump())
+    db.add(slot)
+    await db.commit()
+    await db.refresh(slot)
+    return {"id": str(slot.id), "status": slot.status}
+
+@router.get("/{doctor_id}/availability")
+async def list_slots(doctor_id: UUID, db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(
+        select(AvailabilitySlot).where(AvailabilitySlot.doctor_id == doctor_id).order_by(AvailabilitySlot.start_time)
+    )).scalars().all()
+    return [{"id": str(s.id), "start_time": s.start_time, "end_time": s.end_time, "status": s.status} for s in rows]
+from datetime import datetime, timezone
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, field_validator
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import require_roles
+from app.models.doctor import Doctor, AvailabilitySlot
+
+
+router = APIRouter(prefix="/doctors", tags=["Doctors"])
+
+
+class DoctorIn(BaseModel):
+    specialization: str
+    license_number: str
+    experience_years: int = 0
+    bio: str = ""
+
+
+class SlotIn(BaseModel):
+    start_time: datetime
+    end_time: datetime
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, value, info):
+        start_time = info.data.get("start_time")
+
+        if start_time and value <= start_time:
+            raise ValueError("end_time must be after start_time")
+
+        return value
+
+
+@router.get("")
+async def search_doctors(
+    specialization: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(Doctor)
+
+    if specialization:
+        stmt = stmt.where(
+            Doctor.specialization.ilike(f"%{specialization}%")
+        )
+
+    rows = (await db.execute(stmt)).scalars().all()
+
+    return [
+        {
+            "id": str(d.id),
+            "specialization": d.specialization,
+            "experience_years": d.experience_years,
+            "verified": d.is_verified,
+        }
+        for d in rows
+    ]
+
+
+@router.post("")
+async def create_doctor(
+    data: DoctorIn,
+    user=Depends(require_roles("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    doctor = Doctor(
+        user_id=user.id,
+        **data.model_dump(),
+    )
+
+    db.add(doctor)
+
+    try:
+        await db.commit()
+        await db.refresh(doctor)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Doctor profile already exists or license number is already registered",
+        )
+
+    return {"id": str(doctor.id)}
+
+
+@router.post(
+    "/{doctor_id}/availability",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_slot(
+    doctor_id: UUID,
+    data: SlotIn,
+    user=Depends(require_roles("DOCTOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    # Check doctor exists
+    doctor = await db.get(Doctor, doctor_id)
+
+    if not doctor:
+        raise HTTPException(
+            status_code=404,
+            detail="Doctor not found",
+        )
+
+    # Doctors can only manage their own availability.
+    # Admins can manage any doctor.
+    if user.role == "DOCTOR" and doctor.user_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot manage another doctor's availability",
+        )
+
+    # Convert timezone-aware input to UTC-naive because the current
+    # AvailabilitySlot model uses DateTime without timezone.
+    start_time = data.start_time
+    end_time = data.end_time
+
+    if start_time.tzinfo:
+        start_time = start_time.astimezone(timezone.utc).replace(tzinfo=None)
+
+    if end_time.tzinfo:
+        end_time = end_time.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # Availability must be in the future.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if start_time <= now:
+        raise HTTPException(
+            status_code=400,
+            detail="Availability must start in the future",
+        )
+
+    # Check for overlapping availability.
+    overlap_stmt = select(AvailabilitySlot).where(
+        AvailabilitySlot.doctor_id == doctor_id,
+        AvailabilitySlot.start_time < end_time,
+        AvailabilitySlot.end_time > start_time,
+    )
+
+    existing_slot = (
+        await db.execute(overlap_stmt)
+    ).scalar_one_or_none()
+
+    if existing_slot:
+        raise HTTPException(
+            status_code=409,
+            detail="Availability slot overlaps with an existing slot",
+        )
+
+    slot = AvailabilitySlot(
+        doctor_id=doctor_id,
+        start_time=start_time,
+        end_time=end_time,
+        status="AVAILABLE",
+    )
+
+    db.add(slot)
+
+    try:
+        await db.commit()
+        await db.refresh(slot)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Availability slot already exists",
+        )
+
+    return {
+        "id": str(slot.id),
+        "doctor_id": str(slot.doctor_id),
+        "start_time": slot.start_time,
+        "end_time": slot.end_time,
+        "status": slot.status,
+    }
+
+
+@router.get("/{doctor_id}/availability")
+async def list_slots(
+    doctor_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify doctor exists
+    doctor = await db.get(Doctor, doctor_id)
+
+    if not doctor:
+        raise HTTPException(
+            status_code=404,
+            detail="Doctor not found",
+        )
+
+    rows = (
+        await db.execute(
+            select(AvailabilitySlot)
+            .where(
+                AvailabilitySlot.doctor_id == doctor_id
+            )
+            .order_by(AvailabilitySlot.start_time)
+        )
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(s.id),
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "status": s.status,
+        }
+        for s in rows
+    ]
